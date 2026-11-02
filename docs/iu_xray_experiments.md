@@ -1,4 +1,4 @@
-# IU X-Ray：HDC 修复与参数实验
+# IU X-Ray：HDC、MAL 修复与参数实验
 
 本次修复不是已验证的 BLEU 提升。需要在相同划分、词表、参考文本处理方式下重新训练和评估。
 
@@ -21,7 +21,8 @@
 
 ## 推荐顺序
 
-先跑修复后的原参数基线（结果使用新目录，不覆盖旧实验）：
+先跑当前候选配置：多正样本 MAL + `mal_weight=0.1`，结果保存到
+`results/iu_xray_hdc_mal_fixed_w01`；其他主要训练超参数沿用原脚本：
 
 ```bash
 bash train_iu_xray.sh
@@ -36,22 +37,22 @@ bash train_iu_xray.sh --lr_ve 1e-5 --lr_ed 1e-4 --warmup_epochs 5 \
 
 这是候选设置，不是已确定的最佳值。保持 seed=7580、batch=16、max_seq_length=60、threshold=3。
 训练脚本末尾支持覆盖参数。可在选定学习率后比较 `--hdc_scale 0.1` 与 `0.3`，分别保存到不同目录。
-`mal_alpha` 只调节 MAL 内部对比/重建比例，不是 MAL 总权重。本次没有修改 MAL。
+`mal_alpha` 调节 MAL 内部对比/重建比例；`mal_weight` 独立控制 MAL 总权重，详见下一节。
 当前 CosineWithWarmup 实现未使用 `min_lr`，改变它不会调整该调度器的最低学习率。
 脚本注释中的梯度裁剪原来没有对应实现；本次已移除误导注释，没有额外修改训练梯度策略。
 
 ## 验证集比较解码和记忆权重（无需重训）
 
-以下示例针对修复后的原参数基线。若训练时修改了模型或 HDC 设置，测试时传入相同设置。
+以下示例针对当前脚本的候选配置。若训练时修改了模型或 HDC 设置，测试时传入相同设置。
 
 ```bash
 python main_test.py \
-  --load results/iu_xray_hdc_fixed/model_best.pth \
+  --load results/iu_xray_hdc_mal_fixed_w01/model_best.pth \
   --eval_split val --sample_method greedy --beam_size 1 \
   --hd_memory_weight 0.2 --save_dir results/iu_xray_eval_val_greedy
 
 python main_test.py \
-  --load results/iu_xray_hdc_fixed/model_best.pth \
+  --load results/iu_xray_hdc_mal_fixed_w01/model_best.pth \
   --eval_split val --sample_method beam_search --beam_size 3 --length_penalty 0.6 \
   --hd_memory_weight 0.2 --save_dir results/iu_xray_eval_val_beam3
 ```
@@ -98,7 +99,47 @@ python scripts/setup_meteor.py --wheel /path/to/pycocoevalcap-1.2-py3-none-any.w
 若 Java 失败，保留其 stderr；METEOR 不会被跳过或记成零分。
 
 ```bash
-OMP_NUM_THREADS=1 python -m pytest -q tests/test_hd_memory.py tests/test_meteor.py
+OMP_NUM_THREADS=1 python -m pytest -q tests/test_hd_memory.py tests/test_meteor.py tests/test_mal.py
 ```
 
 真实 Java 集成测试在缺少 Java 或数据时明确标记 skipped；准备好依赖后应全部执行。
+
+## 多正样本 MAL 与独立总权重
+
+对比损失改为平均所有正样本的负对数概率。原来的 class-0 交叉熵只奖励第一个正样本，
+其他正样本仍参与竞争。现在同一样本的其他视角全部得到相同的目标权重，自身配对被排除。
+
+```text
+MAL = (1 - mal_alpha) * contrastive + mal_alpha * reconstruction
+loss = report_loss + mal_weight * MAL
+```
+
+Python 参数默认 `mal_weight=1.0`，保留未显式传参时的辅助项系数。
+`train_iu_xray.sh` 显式设置候选 `mal_weight=0.1`，且保持 `mal_alpha=0.1`、`mal_tau=0.1`。
+这使总损失中的对比项系数为 0.09、重建项系数为 0.01。
+`mal_weight=0` 不引入 MAL 梯度，但仍计算它；`--use_mal false` 则关闭 MAL 计算。
+启动日志打印该权重，逐批和 epoch 日志分别记录报告损失、原始 MAL、加权 MAL。
+进度条 loss 为运行均值，report/mal/w_mal 为当前批次；epoch 分量采用批次均值。
+
+运行与对照（每次使用独立目录；建议从头训练，同一随机种子比较）：
+
+```bash
+# 当前候选：0.1
+bash train_iu_xray.sh
+
+# 同样的修正实现，保持原来的辅助项系数 1.0
+bash train_iu_xray.sh --mal_weight 1.0 \
+  --save_dir results/iu_xray_hdc_mal_fixed_w1
+
+# 关闭 MAL 的消融
+bash train_iu_xray.sh --use_mal false \
+  --save_dir results/iu_xray_hdc_no_mal
+```
+
+本次没有再调整学习率或 HDC 设置。MAL 无新增可训练参数，因此模型权重格式不变，
+但旧模型没有接受修正后的目标训练，直接推理不会获得这项训练改进。
+多正样本损失的绝对数值可能比旧版高：两个正样本时，纯对比项的下界为 log(2)。
+因此不应跨版本直接比较原始 MAL 大小；用验证集选定 checkpoint 后比较完整 BLEU 指标。
+
+测试包含与独立标量定义的数值/梯度对照、视角顺序不变性、单样本和无视角边界、
+辅助权重的梯度缩放，以及实际 Trainer 更新和真实 ResNet101 双图模型的联合反向传播。

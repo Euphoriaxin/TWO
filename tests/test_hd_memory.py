@@ -148,7 +148,8 @@ def test_training_and_test_cli_share_memory_and_model_options(monkeypatch):
         assert getattr(training, key) == getattr(testing, key)
 
 
-def test_real_resnet_iu_forward_backward_and_sample(monkeypatch):
+@pytest.mark.parametrize("use_mal", [False, True])
+def test_real_resnet_iu_forward_backward_and_sample(monkeypatch, use_mal):
     from main_train import parse_agrs
     from models.models import BaseCMNModel
     monkeypatch.setattr('sys.argv', ['main_train.py'])
@@ -156,13 +157,18 @@ def test_real_resnet_iu_forward_backward_and_sample(monkeypatch):
     args.visual_extractor_pretrained = False  # no network/data needed
     args.d_model, args.d_ff, args.num_heads, args.num_layers = 8, 16, 2, 1
     args.hd_dim, args.max_seq_length = 32, 5
-    args.use_mal = False
+    args.use_mal = use_mal
     args.sample_method, args.beam_size = 'greedy', 1
     model = BaseCMNModel(args, SimpleNamespace(idx2token={1:'a', 2:'b', 3:'c'}))
     images = torch.randn(1, 2, 3, 224, 224)
     model.train()
-    output, _ = model(images, torch.tensor([[0, 1, 2, 0]]))
-    (-output[..., 1].mean()).backward()
+    from modules.loss import compute_loss
+    ids = torch.tensor([[0, 1, 2, 0]])
+    output, mal_loss = model(images, ids)
+    assert (mal_loss is not None) == use_mal
+    loss = compute_loss(output, ids, torch.ones_like(ids), mal_loss, mal_weight=.1)
+    assert torch.isfinite(loss)
+    loss.backward()
     assert model.visual_extractor.model[0].weight.grad is not None
     assert model.encoder_decoder.hd_proj.weight.grad is None
     assert model.encoder_decoder.hd_memory.counts.sum() == 3

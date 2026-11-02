@@ -1,4 +1,6 @@
 # modules/loss.py
+import math
+
 import torch
 import torch.nn as nn
 
@@ -15,9 +17,11 @@ class LanguageModelCriterion(nn.Module):
         return output
 
 
-def compute_loss(output, reports_ids, reports_masks, mal_loss=None):
+def compute_loss(output, reports_ids, reports_masks, mal_loss=None, mal_weight=1.0):
+    if not math.isfinite(mal_weight) or mal_weight < 0:
+        raise ValueError("mal_weight must be finite and nonnegative")
     criterion = LanguageModelCriterion()
     loss = criterion(output, reports_ids[:, 1:], reports_masks[:, 1:]).mean()
-    if mal_loss is not None:
-        loss = loss + mal_loss
+    if mal_loss is not None and mal_weight != 0:
+        loss = loss + mal_weight * mal_loss
     return loss

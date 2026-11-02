@@ -226,6 +226,7 @@ class BaseTrainer(object):
         if use_mal:
             self.logger.info(f"  - 平衡系数 (mal_alpha): {g('mal_alpha')}")
             self.logger.info(f"  - 温度系数 (mal_tau): {g('mal_tau')}")
+            self.logger.info(f"  - MAL总权重 (mal_weight): {g('mal_weight', 1.0)}")
 
         # ---- 评测 / 采样 ----
         self.logger.info("-" * 80)
@@ -259,7 +260,10 @@ class BaseTrainer(object):
         self.logger.info("▬" * 60)
         self.logger.info(f"训练轮数 {progress}: {progress_bar} {100*epoch/self.epochs:.1f}%")
         self.logger.info(f"第{epoch:3d}轮训练平均损失 (总): {train_loss:.4f}")
-        # ★ 新增：打印 MAL 分量（若有）
+        if "train_report_loss" in log:
+            self.logger.info(f"第{epoch:3d}轮报告生成平均损失: {log['train_report_loss']:.4f}")
+            self.logger.info(f"第{epoch:3d}轮加权 MAL 平均损失: {log['train_weighted_mal_loss']:.4f}")
+        # 原始 MAL 分量（未乘 mal_weight）
         if train_mal_loss is not None:
             self.logger.info(f"第{epoch:3d}轮 MAL 平均损失: {train_mal_loss:.4f}")
         self.logger.info(f"训练耗时: {epoch_time:.1f}s")
@@ -351,6 +355,9 @@ class BaseTrainer(object):
         with open(self.log_file, 'a') as f:
             f.write(f"\nEpoch {epoch}:\n")
             f.write(f"  Train Loss: {log.get('train_loss', 0):.4f}\n")
+            if "train_report_loss" in log:
+                f.write(f"  Train Report Loss: {log['train_report_loss']:.4f}\n")
+                f.write(f"  Train Weighted MAL Loss: {log['train_weighted_mal_loss']:.4f}\n")
             if log.get('train_mal_loss') is not None:
                 f.write(f"  Train MAL Loss: {log.get('train_mal_loss'):.4f}\n")
             f.write("  Validation Metrics:\n")
@@ -491,6 +498,9 @@ class Trainer(BaseTrainer):
         # "optimizer.step() 之后才能 scheduler.step()" 的顺序。
 
         train_loss = 0
+        report_loss_sum = 0.0
+        weighted_mal_sum = 0.0
+        mal_weight = getattr(self.args, 'mal_weight', 1.0)
         mal_loss_sum = 0.0      # ★ 新增：累加 MAL 损失
         mal_batches = 0         # ★ 新增：统计有 MAL 的 batch 数
         self.model.train()
@@ -513,10 +523,16 @@ class Trainer(BaseTrainer):
                 model_output, mal_loss = output
             else:
                 model_output, mal_loss = output, None
-            loss = self.criterion(model_output, reports_ids, reports_masks, mal_loss=mal_loss)
+            loss = self.criterion(model_output, reports_ids, reports_masks,
+                                  mal_loss=mal_loss, mal_weight=mal_weight)
             # =================================================================
 
-            train_loss += loss.item()
+            total_value = loss.item()
+            weighted_mal_value = mal_weight * mal_loss.item() if mal_loss is not None and mal_weight else 0.0
+            report_value = total_value - weighted_mal_value
+            train_loss += total_value
+            report_loss_sum += report_value
+            weighted_mal_sum += weighted_mal_value
             # ★ 新增：追踪 MAL 分量
             if mal_loss is not None:
                 mal_loss_sum += mal_loss.item()
@@ -527,9 +543,10 @@ class Trainer(BaseTrainer):
             self.optimizer.step()
 
             avg_loss = train_loss / (batch_idx + 1)
-            postfix = {'loss': f'{avg_loss:.4f}', 'batch': f'{batch_idx+1}/{len(self.train_dataloader)}'}
+            postfix = {'loss': f'{avg_loss:.4f}', 'report': f'{report_value:.4f}', 'batch': f'{batch_idx+1}/{len(self.train_dataloader)}'}
             if mal_loss is not None:
                 postfix['mal'] = f'{mal_loss.item():.4f}'
+                postfix['w_mal'] = f'{weighted_mal_value:.4f}'
             pbar.set_postfix(postfix)
 
             if (batch_idx + 1) % self.args.log_period == 0:
@@ -538,7 +555,11 @@ class Trainer(BaseTrainer):
         pbar.close()
 
         avg_train_loss = train_loss / len(self.train_dataloader)
-        log = {'train_loss': avg_train_loss}
+        log = {
+            'train_loss': avg_train_loss,
+            'train_report_loss': report_loss_sum / len(self.train_dataloader),
+            'train_weighted_mal_loss': weighted_mal_sum / len(self.train_dataloader),
+        }
         # ★ 新增：写入 MAL 平均损失（仅当启用 MAL 时）
         if mal_batches > 0:
             log['train_mal_loss'] = mal_loss_sum / mal_batches

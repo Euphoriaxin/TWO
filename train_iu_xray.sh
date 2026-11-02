@@ -1,6 +1,6 @@
 #!/bin/bash
 # train_iu_xray.sh
-# 原参数对照 + 修复后的 HDC 记忆。末尾可传入参数覆盖默认值。
+# HDC + 多正样本 MAL 修复；mal_weight=0.1 为候选值，可在末尾覆盖。
 set -e
 
 export HF_ENDPOINT=https://hf-mirror.com
@@ -35,7 +35,7 @@ python main_train.py \
     --sample_method   greedy \
     --beam_size       1 \
     --length_penalty  0.0 \
-    --save_dir        results/iu_xray_hdc_fixed \
+    --save_dir        results/iu_xray_hdc_mal_fixed_w01 \
     --log_period      50 \
     --hd_dim          5000 \
     --hdc_scale       0.3 \
@@ -46,6 +46,7 @@ python main_train.py \
     --num_experts     4 \
     --mal_alpha       0.1 \
     --mal_tau         0.1 \
+    --mal_weight      0.1 \
     --use_evmoe       true \
     --use_mal         true \
     --monitor_metric  BLEU_4 \

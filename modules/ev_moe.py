@@ -176,6 +176,10 @@ class EV_MoEModule(nn.Module):
 class MultiViewAlignmentLoss(nn.Module):
     def __init__(self, alpha=0.5, tau=0.1):
         super().__init__()
+        if not math.isfinite(alpha) or not 0 <= alpha <= 1:
+            raise ValueError("MAL alpha must be finite and between 0 and 1")
+        if not math.isfinite(tau) or tau <= 0:
+            raise ValueError("MAL tau must be finite and positive")
         self.alpha = alpha  # 重建损失权重
         self.tau = tau  # 温度系数（让相似度更尖锐）
 
@@ -185,7 +189,7 @@ class MultiViewAlignmentLoss(nn.Module):
 
         '''如果连一个有效视角都没有（极端脏数据），直接返回 0 损失，但保留梯度通路，避免训练崩。'''
         if len(view_pooled) == 0:
-            return torch.tensor(0.0, device=fused_global.device, requires_grad=True)
+            return fused_global.sum() * 0.0
 
         B = fused_global.size(0)
         d = fused_global.size(1)
@@ -229,8 +233,10 @@ class MultiViewAlignmentLoss(nn.Module):
             neg_sim = sim[neg_mask].view(B, -1)  # (B, V*(B-1))
 
             logits = torch.cat([pos_sim, neg_sim], dim=1)  # (B, V-1 + V*(B-1))
-            labels = torch.zeros(B, dtype=torch.long, device=fused_global.device)
-            total_loss += F.cross_entropy(logits, labels)
+            # Every positive receives equal target mass; exclude only the anchor itself.
+            # A class-0 target would incorrectly treat the other positives as negatives.
+            log_probs = F.log_softmax(logits, dim=1)
+            total_loss += -log_probs[:, :pos_sim.size(1)].mean()
 
         total_loss /= V
 

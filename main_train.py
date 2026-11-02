@@ -68,6 +68,8 @@ def parse_agrs(parser=None):
     parser.add_argument('--num_experts', type=int, default=4, help='EV-MoE number of experts (DMFM).')
     parser.add_argument('--mal_alpha', type=float, default=0.5, help='MAL balance: (1-a)*contrast + a*mse.')
     parser.add_argument('--mal_tau', type=float, default=0.1, help='MAL contrastive temperature.')
+    parser.add_argument('--mal_weight', type=float, default=1.0,
+                        help='Overall MAL weight; separate from mal_alpha (internal contrast/reconstruction balance).')
     # --- EV-MoE / MAL 总开关（消融实验用）---
     parser.add_argument('--use_evmoe', type=lambda x: (str(x).lower() == 'true'), default=True,
                         help='Enable EV-MoE (VFEM+DMFM). Set False to use original concat baseline.')
@@ -129,6 +131,8 @@ def parse_agrs(parser=None):
     parser.add_argument('--resume', type=str, help='whether to resume the training from existing checkpoints.')
 
     args = parser.parse_args()
+    if not np.isfinite(args.mal_weight) or args.mal_weight < 0:
+        parser.error("--mal_weight must be finite and nonnegative")
     return args
 
 
