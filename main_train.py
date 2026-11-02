@@ -13,8 +13,8 @@ from modules.tokenizers import Tokenizer
 from modules.trainer import Trainer
 
 
-def parse_agrs():
-    parser = argparse.ArgumentParser()
+def parse_agrs(parser=None):
+    parser = parser if parser is not None else argparse.ArgumentParser()
 
     # Data input settings
     parser.add_argument('--image_dir', type=str, default='data/iu_xray/images/',
@@ -59,6 +59,11 @@ def parse_agrs():
     parser.add_argument('--hd_dim', type=int, default=5000, help='HDC hyperdimension.')
     parser.add_argument('--num_patches', type=int, default=16, help='number of patches for HDC binding.')
     parser.add_argument('--hdc_scale', type=float, default=0.3, help='HDC response injection scale')
+    parser.add_argument('--use_hd_memory', type=lambda x: str(x).lower() == 'true', default=True)
+    parser.add_argument('--update_hd_memory', type=lambda x: str(x).lower() == 'true', default=True)
+    parser.add_argument('--hd_memory_weight', type=float, default=0.2,
+                        help='Weight of prototype similarity added to next-token logits; 0 disables retrieval.')
+    parser.add_argument('--hd_memory_temperature', type=float, default=0.1)
     # --- EV-MoE 超参 ---
     parser.add_argument('--num_experts', type=int, default=4, help='EV-MoE number of experts (DMFM).')
     parser.add_argument('--mal_alpha', type=float, default=0.5, help='MAL balance: (1-a)*contrast + a*mse.')

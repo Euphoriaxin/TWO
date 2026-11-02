@@ -1,6 +1,6 @@
 #!/bin/bash
 # train_iu_xray.sh
-# 基于 0.1948 那轮的完整配置，并加上梯度裁剪 / 更强正则来防止崩塌
+# 原参数对照 + 修复后的 HDC 记忆。末尾可传入参数覆盖默认值。
 set -e
 
 export HF_ENDPOINT=https://hf-mirror.com
@@ -33,17 +33,22 @@ python main_train.py \
     --sample_method   greedy \
     --beam_size       1 \
     --length_penalty  0.0 \
-    --save_dir        results/iu_xray_evmoe_mal_5500 \
+    --save_dir        results/iu_xray_hdc_fixed \
     --log_period      50 \
     --hd_dim          5000 \
     --hdc_scale       0.3 \
+    --use_hd_memory   true \
+    --update_hd_memory true \
+    --hd_memory_weight 0.2 \
+    --hd_memory_temperature 0.1 \
     --num_experts     4 \
     --mal_alpha       0.1 \
     --mal_tau         0.1 \
     --use_evmoe       true \
     --use_mal         true \
     --monitor_metric  BLEU_4 \
-    --early_stop      10
+    --early_stop      10 \
+    "$@"
 
 
 

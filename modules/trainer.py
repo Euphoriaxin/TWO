@@ -138,7 +138,6 @@ class BaseTrainer(object):
                         'path': os.path.join(self.checkpoint_dir, 'model_best.pth'),
                         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     }
-                    self._binarize_memory()
                     self._save_checkpoint(epoch, save_best=True)
                     self._print_best_model_info()
                 else:
@@ -152,7 +151,6 @@ class BaseTrainer(object):
                 self._save_checkpoint(epoch, save_best=False)
             self._log_to_file(epoch, log, best)
         total_time = time.time() - self.start_time
-        self._binarize_memory()
         self._save_checkpoint(self.epochs, save_best=False, prefix='final_')
         self._print_training_summary(total_time)
         self._print_best_recorder()

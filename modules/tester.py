@@ -5,7 +5,6 @@ from abc import abstractmethod
 import cv2
 import numpy as np
 import pandas as pd
-import spacy
 import torch
 from tqdm import tqdm
 
@@ -62,7 +61,7 @@ class BaseTester(object):
     def _load_checkpoint(self, load_path):
         load_path = str(load_path)
         self.logger.info("Loading checkpoint: {} ...".format(load_path))
-        checkpoint = torch.load(load_path)
+        checkpoint = torch.load(load_path, map_location=self.device)
         self.model.load_state_dict(checkpoint['state_dict'])
 
 
@@ -88,7 +87,8 @@ class Tester(BaseTester):
 
             test_met = self.metric_ftns({i: [gt] for i, gt in enumerate(test_gts)},
                                         {i: [re] for i, re in enumerate(test_res)})
-            log.update(**{'test_' + k: v for k, v in test_met.items()})
+            split = getattr(self.args, 'eval_split', 'test')
+            log.update(**{split + '_' + k: v for k, v in test_met.items()})
             print(log)
 
             test_res, test_gts = pd.DataFrame(test_res), pd.DataFrame(test_gts)
@@ -98,6 +98,8 @@ class Tester(BaseTester):
         return log
 
     def plot(self):
+        import spacy
+
         assert self.args.batch_size == 1 and self.args.beam_size == 1
         self.logger.info('Start to plot attention weights in the test set.')
         os.makedirs(os.path.join(self.save_dir, "attentions"), exist_ok=True)

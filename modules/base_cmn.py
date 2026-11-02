@@ -252,7 +252,7 @@ class BaseCMN(AttModel):
             hdc_scale=self.hdc_scale
         )
         for p in model.parameters():
-            if p.dim() > 1:
+            if p.requires_grad and p.dim() > 1:
                 nn.init.xavier_uniform_(p)
         return model
 
@@ -279,9 +279,15 @@ class BaseCMN(AttModel):
         nn.init.normal_(self.hd_proj.weight, mean=0.0, std=0.01)
         nn.init.zeros_(self.hd_proj.bias)
         '''随机初始化后固定不动的线性变换'''
-        self.hd_proj.requires_grad = False # 冻结！只做查表式增强
+        self.hd_proj.requires_grad_(False)
 
         self.hdc_scale = getattr(args, 'hdc_scale', 0.3)
+        self.use_hd_memory = getattr(args, 'use_hd_memory', True)
+        self.update_hd_memory = getattr(args, 'update_hd_memory', True)
+        self.hd_memory_weight = getattr(args, 'hd_memory_weight', 0.2)
+        self.hd_memory_temperature = getattr(args, 'hd_memory_temperature', 0.1)
+        if self.hd_memory_weight < 0 or self.hd_memory_temperature <= 0:
+            raise ValueError('HDC memory requires nonnegative weight and positive temperature')
 
         # ===== EV-MoE 开关与模块 =====
         self.use_evmoe = getattr(args, 'use_evmoe', True)
@@ -316,11 +322,12 @@ class BaseCMN(AttModel):
         return []
 
     def _prepare_feature(self, fc_feats, att_feats, att_masks):
-        att_feats, seq, att_masks, seq_mask = self._prepare_feature_forward(att_feats, att_masks)
+        att_feats, seq, att_masks, seq_mask, img_hd = self._prepare_feature_forward(att_feats, att_masks)
         memory = self.model.encode(att_feats, att_masks)
         if fc_feats.dim() == 3:
             fc_feats = fc_feats.mean(dim=1)
-        return fc_feats, att_feats, memory, att_masks
+        # Carry the image query through the existing beam/sample batch expansion.
+        return img_hd, att_feats, memory, att_masks
 
     def _prepare_feature_forward(self, att_list, view_masks, seq=None):
         # ===== 1) 各视角分别投影到 d_model =====
@@ -364,23 +371,48 @@ class BaseCMN(AttModel):
             seq_mask[:, 0] += True
             seq_mask = seq_mask.unsqueeze(-2)
             seq_mask = seq_mask & subsequent_mask(seq.size(-1)).to(seq_mask)
-            if self.training:
-                with torch.no_grad():
-                    seq_pos = torch.arange(seq.size(1), device=seq.device).unsqueeze(0).expand(seq.size(0), -1)
-                    img_hd = self.hdc.bundling(img_hd_seq.detach())
-                    txt_hd_seq = self.hdc.compute_txt_hd_seq(self.model.tgt_embed(seq).detach())
-                    img_hd_expanded = img_hd.unsqueeze(1).repeat(1, txt_hd_seq.size(1), 1)
-                    combined_hd = self.hdc.binding(img_hd_expanded, txt_hd_seq)
-                self.hd_memory.update(seq_pos, seq, combined_hd)
         else:
             seq_mask = None
-        return fused_seq, seq, att_masks, seq_mask
+        return fused_seq, seq, att_masks, seq_mask, self.hdc.bundling(img_hd_seq.detach())
+
+    @torch.no_grad()
+    def _memory_queries(self, img_hd, input_tokens):
+        # No dropout or future tokens: same query in teacher forcing and sampling.
+        text_hd = self.hdc.compute_txt_hd_seq(self.model.tgt_embed[0](input_tokens))
+        return img_hd.unsqueeze(1) * text_hd
+
+    def _memory_bias(self, positions, queries):
+        return (self.hd_memory.compute_logits(positions, queries)
+                * (self.hd_memory_weight / self.hd_memory_temperature))
 
     def _forward(self, fc_feats, att_feats, seq, att_masks=None):
-        att_feats, seq, att_masks, seq_mask = self._prepare_feature_forward(att_feats, att_masks, seq)
-        out = self.model(att_feats, seq, att_masks, seq_mask, hdc_memory=self.hd_memory)
-        outputs = F.log_softmax(self.logit(out), dim=-1)
-        return outputs, self._last_mal_loss
+        targets = seq[:, 1:]
+        att_feats, inputs, att_masks, seq_mask, img_hd = self._prepare_feature_forward(
+            att_feats, att_masks, seq)
+        out = self.model(att_feats, inputs, att_masks, seq_mask)
+        logits = self.logit(out)
+        if self.use_hd_memory:
+            positions = torch.arange(inputs.size(1), device=seq.device).expand_as(inputs)
+            queries = self._memory_queries(img_hd, inputs)
+            if self.hd_memory_weight:
+                logits = logits + self._memory_bias(positions, queries)
+            # Include the first prediction and EOS, exclude everything after EOS.
+            valid = torch.cat([torch.ones_like(inputs[:, :1], dtype=torch.bool),
+                               inputs[:, 1:].ne(self.eos_idx).cumprod(1).bool()], dim=1)
+            # Read before write: the current batch must not supply its own answer.
+            if self.training and self.update_hd_memory:
+                self.hd_memory.update(positions, targets, queries, valid)
+        return F.log_softmax(logits, dim=-1), self._last_mal_loss
+
+    def get_logprobs_state(self, it, fc_feats, att_feats, p_att_feats, att_masks,
+                          state, output_logsoftmax=1):
+        output, state = self.core(it, fc_feats, att_feats, p_att_feats, state, att_masks)
+        logits = self.logit(output)
+        if self.use_hd_memory and self.hd_memory_weight:
+            queries = self._memory_queries(fc_feats, it.unsqueeze(1)).squeeze(1)
+            positions = torch.full_like(it, state[0].size(1) - 1)
+            logits = logits + self._memory_bias(positions, queries)
+        return (F.log_softmax(logits, dim=-1) if output_logsoftmax else logits), state
 
     def _save_attns(self, start=False):
         pass

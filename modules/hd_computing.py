@@ -98,37 +98,69 @@ class HyperdimensionalComputing(nn.Module):
 
 
 class HDPrototypeMemory(nn.Module):
-    """原型记忆：用 register_buffer 替代 nn.Parameter，消除 non-leaf 警告"""
+    """Position/next-token prototypes; queries contain only available context.
+
+    Accumulate observations during training and use bipolar prototypes at read
+    time. Never binarize the training accumulator when saving a checkpoint.
+    """
 
     def __init__(self, vocab_size, max_seq_len, hd_dim=5000):
         super().__init__()
         self.vocab_size = vocab_size
         self.max_seq_len = max_seq_len
         self.hd_dim = hd_dim
-        # ★ 改为 register_buffer：非学习参数，但参与 state_dict 存取，优化器不可见
-        self.register_buffer(
-            'prototype',
-            torch.zeros(self.max_seq_len, self.vocab_size, self.hd_dim, dtype=torch.float16) + 1e-8
-        )
+        self.register_buffer('prototype', torch.zeros(
+            max_seq_len, vocab_size, hd_dim, dtype=torch.float16))
+        self.register_buffer('counts', torch.zeros(max_seq_len, vocab_size, dtype=torch.long))
 
-    def update(self, seq_pos, token_ids, combined_hd):
-        # ★ OOM 修复：detach 双保险，确保无计算图
-        combined_hd = combined_hd.detach().to(torch.float16)
-        valid_mask = (seq_pos > 0) & (seq_pos < self.max_seq_len) & (token_ids >= 0) & (token_ids < self.vocab_size)
-        if valid_mask.sum() == 0:
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Old checkpoints indexed the current token, not the next token, and
+        # included padding. Those prototypes cannot be used for causal retrieval.
+        if prefix + 'prototype' in state_dict and prefix + 'counts' not in state_dict:
+            import warnings
+            warnings.warn('Legacy HDC prototypes reset: rebuild memory on the training split before evaluation.')
+            state_dict[prefix + 'prototype'] = torch.zeros_like(self.prototype)
+            state_dict[prefix + 'counts'] = torch.zeros_like(self.counts)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    @torch.no_grad()
+    def update(self, seq_pos, token_ids, query_hd, valid_mask=None):
+        valid = ((seq_pos >= 0) & (seq_pos < self.max_seq_len)
+                 & (token_ids >= 0) & (token_ids < self.vocab_size))
+        if valid_mask is not None:
+            valid &= valid_mask.bool()
+        positions, tokens = seq_pos[valid], token_ids[valid]
+        if positions.numel() == 0:
             return
-        idx_pos = seq_pos[valid_mask]
-        idx_tok = token_ids[valid_mask]
-        self.prototype[idx_pos, idx_tok] += combined_hd[valid_mask]
-        self.prototype[idx_pos, idx_tok] = torch.clamp(self.prototype[idx_pos, idx_tok], -100, 100)
+        # Aggregate duplicate (position, token) observations before assignment.
+        flat_ids = positions * self.vocab_size + tokens
+        unique, inverse = flat_ids.unique(return_inverse=True)
+        additions = torch.zeros(unique.numel(), self.hd_dim, device=query_hd.device)
+        additions.index_add_(0, inverse, query_hd[valid].detach().float())
+        flat = self.prototype.view(-1, self.hd_dim)
+        flat[unique] = (flat[unique].float() + additions).clamp(-60000, 60000).half()
+        self.counts.view(-1).index_add_(0, flat_ids, torch.ones_like(flat_ids))
 
+    @torch.no_grad()
     def binarize(self):
-        self.prototype.data = torch.sign(self.prototype.data + 1e-8).to(torch.float16)
+        """Explicit destructive conversion; not needed for retrieval or saving."""
+        self.prototype.copy_(self.prototype.sign())
 
+    @torch.no_grad()
     def compute_logits(self, seq_pos, query_hd):
-        seq_pos = torch.clamp(seq_pos, 1, self.max_seq_len - 1)
-        pos_prototypes = self.prototype[seq_pos, :, :].to(torch.float16)
-        dot_product = torch.bmm(
-            pos_prototypes, query_hd.unsqueeze(2)
-        ).squeeze(2).to(torch.float32)
-        return torch.clamp(100 - torch.abs(self.hd_dim - dot_product) / self.hd_dim * 100, 0, 100)
+        """Bounded similarities; unseen entries contribute zero logit bias.
+
+        Group by position to avoid allocating a (batch, vocabulary, HD) tensor.
+        """
+        shape = seq_pos.shape
+        positions = seq_pos.reshape(-1)
+        queries = query_hd.detach().reshape(-1, self.hd_dim).float()
+        scores = queries.new_zeros(positions.numel(), self.vocab_size)
+        for pos in positions.unique():
+            if pos < 0 or pos >= self.max_seq_len:
+                continue
+            selected = positions == pos
+            prototypes = self.prototype[pos].float().sign()
+            similarity = queries[selected] @ prototypes.t() / self.hd_dim
+            scores[selected] = similarity.clamp(-1, 1) * (self.counts[pos] > 0)
+        return scores.reshape(*shape, self.vocab_size)
