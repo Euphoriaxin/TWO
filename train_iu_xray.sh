@@ -8,6 +8,8 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
 cd "$(dirname "$0")"
 
+python scripts/setup_meteor.py
+
 python main_train.py \
     --image_dir       data/iu_xray/images/ \
     --ann_path        data/iu_xray/annotation.json \

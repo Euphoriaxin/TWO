@@ -71,3 +71,34 @@ OMP_NUM_THREADS=1 python -m pytest -q tests/test_hd_memory.py
 测试覆盖重复原型累计、EOS/padding、读取先于更新、冻结参数、teacher forcing 与逐词查询一致、
 greedy/beam 读取记忆、评估不写记忆、checkpoint 往返、旧原型重置和真实 ResNet101 双图前向/反向。
 测试使用随机图像和小维度模型，不代表实际 IU X-Ray BLEU 或 GPU 训练吞吐。
+
+## METEOR 在第一个 epoch 验证时出现 BrokenPipeError
+
+仓库原先缺少 `pycocoevalcap/meteor/data/paraphrase-en.gz`。Java 会先报告 file not found 并退出，
+旧 Python 包装器未展示 stderr，随后只显示 BrokenPipeError。另一个 verbose 参数 TypeError
+来自给不支持该参数的 scorer 传参，旧代码会捕获重试；现在只向 BLEU 传 verbose。
+
+更新代码后，IU 训练脚本会先执行数据准备。也可以单独执行：
+
+```bash
+python scripts/setup_meteor.py
+java -version
+```
+
+安装脚本通过当前 Python 的 pip 下载固定的 `pycocoevalcap==1.2` wheel（约 104 MB），
+校验 wheel 和数据文件的 SHA-256，仅提取约 62 MB 的英文资源，不安装或替换 Python 包。
+以后运行只校验本地文件。若服务器不能访问包索引，可以在另一台机器下载 wheel 后上传：
+
+```bash
+python -m pip download --no-deps --only-binary=:all: pycocoevalcap==1.2
+python scripts/setup_meteor.py --wheel /path/to/pycocoevalcap-1.2-py3-none-any.whl
+```
+
+需要可执行的 Java 运行时。训练/测试入口现在会在加载数据和训练前实际运行一次 METEOR 检查。
+若 Java 失败，保留其 stderr；METEOR 不会被跳过或记成零分。
+
+```bash
+OMP_NUM_THREADS=1 python -m pytest -q tests/test_hd_memory.py tests/test_meteor.py
+```
+
+真实 Java 集成测试在缺少 Java 或数据时明确标记 skipped；准备好依赖后应全部执行。

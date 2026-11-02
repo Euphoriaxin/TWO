@@ -7,7 +7,7 @@ import torch
 from models.models import BaseCMNModel
 from modules.dataloaders import R2DataLoader
 from modules.loss import compute_loss
-from modules.metrics import compute_scores
+from modules.metrics import compute_scores, validate_meteor
 from modules.optimizers import build_optimizer, build_lr_scheduler
 from modules.tokenizers import Tokenizer
 from modules.trainer import Trainer
@@ -134,6 +134,7 @@ def parse_agrs(parser=None):
 
 def main():
     args = parse_agrs()
+    validate_meteor()
 
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True

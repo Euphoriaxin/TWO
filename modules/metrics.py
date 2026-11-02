@@ -7,36 +7,32 @@ from pycocoevalcap.rouge import Rouge
 from pycocoevalcap.cider.cider import Cider
 
 
+def validate_meteor():
+    """Fail before training if Java or METEOR's English resources are unusable."""
+    with Meteor() as scorer:
+        scorer.compute_score({0: ['no pleural effusion .']}, {0: ['no pleural effusion .']})
+
+
 def compute_scores(gts, res):
-    """
-    Performs the MS COCO evaluation using the Python 3 implementation (https://github.com/salaniz/pycocoevalcap)
-
-    :param gts: Dictionary with the image ids and their gold captions,
-    :param res: Dictionary with the image ids ant their generated captions
-    :print: Evaluation score (the mean of the scores of all the instances) for each measure
-    """
-
-    # Set up scorers
-    # ====== 2. 在 scorers 列表中加入 Cider()，注意 Key 要和上层打印的 "CIDEr" 大小写完全一致 ======
-    scorers = [
-        (Bleu(4), ["BLEU_1", "BLEU_2", "BLEU_3", "BLEU_4"]),
-        (Meteor(), "METEOR"),
-        (Rouge(), "ROUGE_L"),
-        (Cider(), "CIDEr")
-    ]
-    eval_res = {}
-    # Compute score for each metric
-    for scorer, method in scorers:
-        try:
-            score, scores = scorer.compute_score(gts, res, verbose=0)
-        except TypeError:
-            score, scores = scorer.compute_score(gts, res)
-        if type(method) == list:
-            for sc, m in zip(score, method):
-                eval_res[m] = sc
-        else:
-            eval_res[method] = score
-    return eval_res
+    """Compute every configured metric; failures are reported, never hidden."""
+    with Meteor() as meteor:
+        scorers = [
+            (Bleu(4), ['BLEU_1', 'BLEU_2', 'BLEU_3', 'BLEU_4']),
+            (meteor, 'METEOR'),
+            (Rouge(), 'ROUGE_L'),
+            (Cider(), 'CIDEr'),
+        ]
+        eval_res = {}
+        for scorer, method in scorers:
+            if isinstance(scorer, Bleu):
+                score, _ = scorer.compute_score(gts, res, verbose=0)
+            else:
+                score, _ = scorer.compute_score(gts, res)
+            if isinstance(method, list):
+                eval_res.update(zip(method, score))
+            else:
+                eval_res[method] = score
+        return eval_res
 
 
 def compute_mlc(gt, pred, label_set):
