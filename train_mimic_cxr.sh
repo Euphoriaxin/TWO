@@ -1,0 +1,36 @@
+export PYTHONPATH=/root/autodl-tmp/R2GenCMN-main:$PYTHONPATH
+
+python main_train.py \
+    --image_dir data/mimic_cxr/images/ \
+    --ann_path data/mimic_cxr/EVAP_clean.json \
+    --dataset_name mimic_cxr \
+    --max_seq_length 120 \
+    --threshold 5 \
+    --epochs 60 \
+    --batch_size 16 \
+    --lr_ve 1e-5 \
+    --lr_ed 6e-5 \
+    --step_size 5 \
+    --gamma 0.8 \
+    --weight_decay 1e-4 \
+    --dropout 0.15 \
+    --num_layers 3 \
+    --topk 32 \
+    --cmm_size 512 \
+    --d_model 512 \
+    --cmm_dim 256 \
+    --hd_dim 256 \
+    --use_hd_memory True \
+    --hd_memory_weight 0.25 \
+    --update_hd_memory True \
+    --hd_topk 16 \
+    --seed 7580 \
+    --beam_size 5 \
+    --save_dir results/mimic_cxr_hd   \
+    --log_period 50 \
+    --early_stop 8 \
+    --use_crft False \
+    --augment True \
+    --aug_intensity 0.1 \
+    --aug_rotation 5 \
+    --aug_crop_scale 0.9

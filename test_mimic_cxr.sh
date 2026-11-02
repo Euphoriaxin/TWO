@@ -1,0 +1,21 @@
+python main_test.py \
+    --image_dir data/mimic_cxr/images/ \
+    --ann_path data/mimic_cxr/EVAP_clean.json \
+    --dataset_name mimic_cxr \
+    --max_seq_length 120 \
+    --threshold 5 \
+    --batch_size 16 \
+    --num_layers 3 \
+    --topk 32 \
+    --cmm_size 512 \
+    --cmm_dim 256 \
+    --hd_dim 256 \
+    --use_hd_memory True \
+    --hd_memory_weight 0.25 \
+    --update_hd_memory True \
+    --hd_topk 16 \
+    --seed 7580 \
+    --beam_size 5 \
+    --save_dir results/mimic_cxr_hd/plot_results/ \
+    --use_crft False \
+    --load results/mimic_cxr_hd/model_best.pth
